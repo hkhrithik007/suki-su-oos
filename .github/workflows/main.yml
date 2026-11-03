@@ -44,9 +44,10 @@ jobs:
       - name: Add SukiSU Ultra builtin
         run: |
           set -euo pipefail
-          curl -LSs \
-            https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
-            | bash -s builtin
+
+          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/sukisu
+          git -C /tmp/sukisu checkout 1cfa5734
+          bash /tmp/sukisu/kernel/setup.sh builtin
 
           git -C drivers/kernelsu rev-parse HEAD | tee /tmp/sukisu-commit
 
@@ -65,13 +66,15 @@ jobs:
           patch -p1 < \
             susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
 
-          echo "Checking whether SUSFS supplies the APIs required by this SukiSU revision"
-          if ! grep -Rqs 'susfs_parse_priority_app_strings' include/linux ||
-             ! grep -Rqs 'susfs_set_priority_uid_filter' include/linux; then
-            echo "::error::SukiSU and the selected SUSFS branch do not expose matching priority-filter APIs."
-            echo "No kernel ZIP or GitHub Release will be produced."
+          echo "Checking SUSFS declarations used by SukiSU"
+          grep -Rqs 'susfs_parse_priority_app_strings' include/linux || {
+            echo "::error::SUSFS header is missing susfs_parse_priority_app_strings"
             exit 1
-          fi
+          }
+          grep -Rqs 'susfs_set_priority_uid_filter' include/linux || {
+            echo "::error::SUSFS header is missing susfs_set_priority_uid_filter"
+            exit 1
+          }
 
       - name: Configure kernel
         env:
@@ -97,9 +100,6 @@ jobs:
             --enable CONFIG_KRETPROBES
 
           make O=out ARCH=arm64 LLVM=-12 olddefconfig
-
-          grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_KSU_HACK_ARM64_BRANCH_LINK|CONFIG_KSU_SUSFS_SUS_SU)=' \
-            out/.config
 
           grep -q '^CONFIG_KSU=y$' out/.config
           grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
