@@ -41,28 +41,13 @@ jobs:
       - name: Add LLVM 12 tools to PATH
         run: echo "/usr/lib/llvm-12/bin" >> "$GITHUB_PATH"
 
-      - name: Add SukiSU Ultra builtin without SUSFS
+      - name: Add SukiSU Ultra main
         run: |
           set -euo pipefail
 
           curl -LSs \
             https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
-            | bash -s builtin
-
-          # Remove SukiSU's optional SUSFS calls and header include.
-          sed -i '\|#include <linux/susfs.h>|d' \
-            drivers/kernelsu/kernel_includes.h
-          sed -i '/susfs_parse_priority_app_strings();/d' \
-            drivers/kernelsu/manager/pkg_observer.c
-          sed -i '/susfs_set_priority_uid_filter(arg);/d' \
-            drivers/kernelsu/supercall/dispatch.c
-
-          # Confirm no SUSFS references remain in the SukiSU source.
-          if grep -RIn 'susfs_' drivers/kernelsu \
-              --include='*.c' --include='*.h'; then
-            echo "::error::SUSFS references remain in SukiSU source."
-            exit 1
-          fi
+            | bash -s main
 
           git -C drivers/kernelsu rev-parse HEAD | tee /tmp/sukisu-commit
 
@@ -81,11 +66,12 @@ jobs:
 
           scripts/config --file out/.config \
             --enable CONFIG_KSU \
-            --enable CONFIG_KSU_HACK_ARM64_BRANCH_LINK \
+            --enable CONFIG_KPROBES \
+            --enable CONFIG_KRETPROBES \
             --enable CONFIG_KALLSYMS \
             --enable CONFIG_KALLSYMS_ALL \
-            --enable CONFIG_KPROBES \
-            --enable CONFIG_KRETPROBES
+            --disable CONFIG_KPM \
+            --disable CONFIG_KSU_SUSFS
 
           make O=out ARCH=arm64 LLVM=-12 olddefconfig
 
@@ -93,6 +79,11 @@ jobs:
             echo "::error::CONFIG_KSU is not enabled"
             exit 1
           }
+
+          if grep -q '^CONFIG_KSU_SUSFS=y$' out/.config; then
+            echo "::error::SUSFS is still enabled in the final config"
+            exit 1
+          fi
 
       - name: Build kernel
         run: |
