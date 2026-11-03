@@ -1,4 +1,4 @@
-name: Build Pong with SukiSU Ultra
+name: Build Pong with SukiSU Ultra (no SUSFS)
 
 on:
   workflow_dispatch:
@@ -41,13 +41,28 @@ jobs:
       - name: Add LLVM 12 tools to PATH
         run: echo "/usr/lib/llvm-12/bin" >> "$GITHUB_PATH"
 
-      - name: Add SukiSU Ultra builtin
+      - name: Add SukiSU Ultra builtin without SUSFS
         run: |
           set -euo pipefail
 
           curl -LSs \
             https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
             | bash -s builtin
+
+          # Remove SukiSU's optional SUSFS calls and header include.
+          sed -i '\|#include <linux/susfs.h>|d' \
+            drivers/kernelsu/kernel_includes.h
+          sed -i '/susfs_parse_priority_app_strings();/d' \
+            drivers/kernelsu/manager/pkg_observer.c
+          sed -i '/susfs_set_priority_uid_filter(arg);/d' \
+            drivers/kernelsu/supercall/dispatch.c
+
+          # Confirm no SUSFS references remain in the SukiSU source.
+          if grep -RIn 'susfs_' drivers/kernelsu \
+              --include='*.c' --include='*.h'; then
+            echo "::error::SUSFS references remain in SukiSU source."
+            exit 1
+          fi
 
           git -C drivers/kernelsu rev-parse HEAD | tee /tmp/sukisu-commit
 
@@ -110,6 +125,7 @@ jobs:
             echo "Kernel commit: $(git rev-parse HEAD)"
             echo "Defconfig: $KERNEL_DEFCONFIG"
             echo "SukiSU commit: $(cat /tmp/sukisu-commit)"
+            echo "SUSFS: disabled"
           } > package/BUILD-MANIFEST.txt
 
           cd package
