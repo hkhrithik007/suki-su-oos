@@ -1,4 +1,4 @@
-name: Build Pong with SukiSU Ultra and SUSFS
+name: Build Pong with SukiSU Ultra
 
 on:
   workflow_dispatch:
@@ -36,7 +36,7 @@ jobs:
             bc bison build-essential clang-12 cpio flex \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             libelf-dev libssl-dev lld-12 llvm-12 \
-            patch python3 zip
+            python3 zip
 
       - name: Add LLVM 12 tools to PATH
         run: echo "/usr/lib/llvm-12/bin" >> "$GITHUB_PATH"
@@ -45,36 +45,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/sukisu
-          git -C /tmp/sukisu checkout 1cfa5734
-          bash /tmp/sukisu/kernel/setup.sh builtin
+          curl -LSs \
+            https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
+            | bash -s builtin
 
           git -C drivers/kernelsu rev-parse HEAD | tee /tmp/sukisu-commit
-
-      - name: Add SUSFS for Android 12 / 5.10
-        run: |
-          set -euo pipefail
-
-          git clone --depth=1 --branch gki-android12-5.10 \
-            https://gitlab.com/simonpunk/susfs4ksu.git susfs
-
-          git -C susfs rev-parse HEAD | tee /tmp/susfs-commit
-
-          cp -a susfs/kernel_patches/fs/. fs/
-          cp -a susfs/kernel_patches/include/linux/. include/linux/
-
-          patch -p1 < \
-            susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
-
-          echo "Checking SUSFS declarations used by SukiSU"
-          grep -Rqs 'susfs_parse_priority_app_strings' include/linux || {
-            echo "::error::SUSFS header is missing susfs_parse_priority_app_strings"
-            exit 1
-          }
-          grep -Rqs 'susfs_set_priority_uid_filter' include/linux || {
-            echo "::error::SUSFS header is missing susfs_set_priority_uid_filter"
-            exit 1
-          }
 
       - name: Configure kernel
         env:
@@ -91,9 +66,7 @@ jobs:
 
           scripts/config --file out/.config \
             --enable CONFIG_KSU \
-            --enable CONFIG_KSU_SUSFS \
             --enable CONFIG_KSU_HACK_ARM64_BRANCH_LINK \
-            --disable CONFIG_KSU_SUSFS_SUS_SU \
             --enable CONFIG_KALLSYMS \
             --enable CONFIG_KALLSYMS_ALL \
             --enable CONFIG_KPROBES \
@@ -101,12 +74,15 @@ jobs:
 
           make O=out ARCH=arm64 LLVM=-12 olddefconfig
 
-          grep -q '^CONFIG_KSU=y$' out/.config
-          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
+          grep -q '^CONFIG_KSU=y$' out/.config || {
+            echo "::error::CONFIG_KSU is not enabled"
+            exit 1
+          }
 
       - name: Build kernel
         run: |
           set -euo pipefail
+
           make -j"$(nproc)" O=out ARCH=arm64 LLVM=-12 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
@@ -123,8 +99,10 @@ jobs:
           cp out/arch/arm64/boot/Image.gz package/
           cp out/.config package/kernel.config
 
-          find out/arch/arm64/boot/dts -type f -name '*.dtb' \
-            -exec cp --parents '{}' package/dtb/ \;
+          if [ -d out/arch/arm64/boot/dts ]; then
+            find out/arch/arm64/boot/dts -type f -name '*.dtb' \
+              -exec cp --parents '{}' package/dtb/ \;
+          fi
 
           {
             echo "Device: Nothing Phone (2), Pong"
@@ -132,7 +110,6 @@ jobs:
             echo "Kernel commit: $(git rev-parse HEAD)"
             echo "Defconfig: $KERNEL_DEFCONFIG"
             echo "SukiSU commit: $(cat /tmp/sukisu-commit)"
-            echo "SUSFS commit: $(cat /tmp/susfs-commit)"
           } > package/BUILD-MANIFEST.txt
 
           cd package
