@@ -9,7 +9,7 @@ on:
         default: "gki_defconfig"
         type: string
       publish_release:
-        description: "Publish kernel.zip on the Releases page"
+        description: "Publish kernel.zip on GitHub Releases"
         required: true
         default: true
         type: boolean
@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Check out the fork
+      - name: Check out the kernel fork
         uses: actions/checkout@v4
         with:
           ref: sm8475/b/mr
@@ -38,28 +38,37 @@ jobs:
             libelf-dev libssl-dev lld-12 llvm-12 \
             patch python3 zip
 
-      - name: Add SukiSU Ultra builtin
+      - name: Add LLVM 12 tools to PATH
+        run: echo "/usr/lib/llvm-12/bin" >> "$GITHUB_PATH"
+
+      - name: Add latest SukiSU Ultra builtin
         run: |
           set -euo pipefail
           curl -LSs \
             https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
             | bash -s builtin
 
-      - name: Add SUSFS kernel patches
+          git -C drivers/kernelsu rev-parse HEAD | tee /tmp/sukisu-commit
+
+      - name: Add latest SUSFS for Android 12 / 5.10
         run: |
           set -euo pipefail
+
           git clone --depth=1 --branch gki-android12-5.10 \
             https://gitlab.com/simonpunk/susfs4ksu.git susfs
+
+          git -C susfs rev-parse HEAD | tee /tmp/susfs-commit
 
           cp -a susfs/kernel_patches/fs/. fs/
           cp -a susfs/kernel_patches/include/linux/. include/linux/
 
           patch -p1 < \
             susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
-            
-      - name: Add LLVM 12 tools to PATH
-        run: |
-          echo "/usr/lib/llvm-12/bin" >> "$GITHUB_PATH"
+
+          # Stop early if this SUSFS revision lacks the APIs required by
+          # the current SukiSU builtin integration.
+          grep -Rqs 'susfs_parse_priority_app_strings' include/linux
+          grep -Rqs 'susfs_set_priority_uid_filter' include/linux
 
       - name: Configure kernel
         env:
@@ -78,6 +87,7 @@ jobs:
             --enable CONFIG_KSU \
             --enable CONFIG_KSU_SUSFS \
             --enable CONFIG_KSU_HACK_ARM64_BRANCH_LINK \
+            --disable CONFIG_KSU_SUSFS_SUS_SU \
             --enable CONFIG_KALLSYMS \
             --enable CONFIG_KALLSYMS_ALL \
             --enable CONFIG_KPROBES \
@@ -85,7 +95,7 @@ jobs:
 
           make O=out ARCH=arm64 LLVM=-12 olddefconfig
 
-          grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_KSU_HACK_ARM64_BRANCH_LINK)=' \
+          grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_KSU_HACK_ARM64_BRANCH_LINK|CONFIG_KSU_SUSFS_SUS_SU)=' \
             out/.config
 
           grep -q '^CONFIG_KSU=y$' out/.config
@@ -118,8 +128,8 @@ jobs:
             echo "Kernel branch: sm8475/b/mr"
             echo "Kernel commit: $(git rev-parse HEAD)"
             echo "Defconfig: $KERNEL_DEFCONFIG"
-            echo "SukiSU: SukiSU Ultra builtin branch"
-            echo "SUSFS: gki-android12-5.10"
+            echo "SukiSU commit: $(cat /tmp/sukisu-commit)"
+            echo "SUSFS commit: $(cat /tmp/susfs-commit)"
           } > package/BUILD-MANIFEST.txt
 
           cd package
