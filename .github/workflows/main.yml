@@ -41,7 +41,7 @@ jobs:
       - name: Add LLVM 12 tools to PATH
         run: echo "/usr/lib/llvm-12/bin" >> "$GITHUB_PATH"
 
-      - name: Add latest SukiSU Ultra builtin
+      - name: Add SukiSU Ultra builtin
         run: |
           set -euo pipefail
           curl -LSs \
@@ -50,7 +50,7 @@ jobs:
 
           git -C drivers/kernelsu rev-parse HEAD | tee /tmp/sukisu-commit
 
-      - name: Add latest SUSFS for Android 12 / 5.10
+      - name: Add SUSFS for Android 12 / 5.10
         run: |
           set -euo pipefail
 
@@ -65,10 +65,13 @@ jobs:
           patch -p1 < \
             susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
 
-          # Stop early if this SUSFS revision lacks the APIs required by
-          # the current SukiSU builtin integration.
-          grep -Rqs 'susfs_parse_priority_app_strings' include/linux
-          grep -Rqs 'susfs_set_priority_uid_filter' include/linux
+          echo "Checking whether SUSFS supplies the APIs required by this SukiSU revision"
+          if ! grep -Rqs 'susfs_parse_priority_app_strings' include/linux ||
+             ! grep -Rqs 'susfs_set_priority_uid_filter' include/linux; then
+            echo "::error::SukiSU and the selected SUSFS branch do not expose matching priority-filter APIs."
+            echo "No kernel ZIP or GitHub Release will be produced."
+            exit 1
+          fi
 
       - name: Configure kernel
         env:
