@@ -1,0 +1,138 @@
+name: Build Pong with SukiSU Ultra and SUSFS
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_defconfig:
+        description: "Starting kernel config"
+        required: true
+        default: "gki_defconfig"
+        type: string
+      publish_release:
+        description: "Publish kernel.zip on the Releases page"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out the fork
+        uses: actions/checkout@v4
+        with:
+          ref: sm8475/b/mr
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential clang-12 cpio flex \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            libelf-dev libssl-dev lld-12 llvm-12 \
+            patch python3 zip
+
+      - name: Add SukiSU Ultra builtin
+        run: |
+          set -euo pipefail
+          curl -LSs \
+            https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh \
+            | bash -s builtin
+
+      - name: Add SUSFS kernel patches
+        run: |
+          set -euo pipefail
+          git clone --depth=1 --branch gki-android12-5.10 \
+            https://gitlab.com/simonpunk/susfs4ksu.git susfs
+
+          cp -a susfs/kernel_patches/fs/. fs/
+          cp -a susfs/kernel_patches/include/linux/. include/linux/
+
+          patch -p1 < \
+            susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+
+      - name: Configure kernel
+        env:
+          KERNEL_DEFCONFIG: ${{ inputs.kernel_defconfig }}
+        run: |
+          set -euo pipefail
+
+          test -f "arch/arm64/configs/$KERNEL_DEFCONFIG" || {
+            echo "::error::Config not found: arch/arm64/configs/$KERNEL_DEFCONFIG"
+            exit 1
+          }
+
+          make O=out ARCH=arm64 LLVM=-12 "$KERNEL_DEFCONFIG"
+
+          scripts/config --file out/.config \
+            --enable CONFIG_KSU \
+            --enable CONFIG_KSU_SUSFS \
+            --enable CONFIG_KSU_HACK_ARM64_BRANCH_LINK \
+            --enable CONFIG_KALLSYMS \
+            --enable CONFIG_KALLSYMS_ALL \
+            --enable CONFIG_KPROBES \
+            --enable CONFIG_KRETPROBES
+
+          make O=out ARCH=arm64 LLVM=-12 olddefconfig
+
+          grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_KSU_HACK_ARM64_BRANCH_LINK)=' \
+            out/.config
+
+          grep -q '^CONFIG_KSU=y$' out/.config
+          grep -q '^CONFIG_KSU_SUSFS=y$' out/.config
+
+      - name: Build kernel
+        run: |
+          set -euo pipefail
+          make -j"$(nproc)" O=out ARCH=arm64 LLVM=-12 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            Image.gz dtbs modules
+
+      - name: Package build outputs
+        env:
+          KERNEL_DEFCONFIG: ${{ inputs.kernel_defconfig }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p package/dtb
+          test -f out/arch/arm64/boot/Image.gz
+          cp out/arch/arm64/boot/Image.gz package/
+          cp out/.config package/kernel.config
+
+          find out/arch/arm64/boot/dts -type f -name '*.dtb' \
+            -exec cp --parents '{}' package/dtb/ \;
+
+          {
+            echo "Device: Nothing Phone (2), Pong"
+            echo "Kernel branch: sm8475/b/mr"
+            echo "Kernel commit: $(git rev-parse HEAD)"
+            echo "Defconfig: $KERNEL_DEFCONFIG"
+            echo "SukiSU: SukiSU Ultra builtin branch"
+            echo "SUSFS: gki-android12-5.10"
+          } > package/BUILD-MANIFEST.txt
+
+          cd package
+          zip -r ../kernel.zip .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pong-kernel-${{ github.run_number }}
+          path: kernel.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "build-${{ github.run_number }}"
+          name: "Pong kernel build ${{ github.run_number }}"
+          generate_release_notes: true
+          files: kernel.zip
