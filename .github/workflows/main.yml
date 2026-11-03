@@ -56,6 +56,10 @@ jobs:
 
           patch -p1 < \
             susfs/kernel_patches/50_add_susfs_in_gki-android12-5.10.patch
+            
+      - name: Add LLVM 12 tools to PATH
+        run: |
+          echo "/usr/lib/llvm-12/bin" >> "$GITHUB_PATH"
 
       - name: Configure kernel
         env:
